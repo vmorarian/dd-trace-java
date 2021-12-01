@@ -28,34 +28,18 @@ import datadog.trace.api.Config;
 import datadog.trace.api.IOLogger;
 import datadog.trace.util.AgentProxySelector;
 import datadog.trace.util.AgentThreadFactory;
-import java.io.File;
-import java.io.IOException;
-import java.io.InterruptedIOException;
+import java.io.*;
 import java.net.InetSocketAddress;
 import java.net.Proxy;
 import java.time.Duration;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import javax.annotation.Nonnull;
-import okhttp3.Call;
-import okhttp3.Callback;
-import okhttp3.ConnectionPool;
-import okhttp3.ConnectionSpec;
-import okhttp3.Credentials;
-import okhttp3.Dispatcher;
-import okhttp3.Headers;
-import okhttp3.MultipartBody;
-import okhttp3.OkHttpClient;
-import okhttp3.Request;
-import okhttp3.RequestBody;
-import okhttp3.Response;
+import okhttp3.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -68,18 +52,22 @@ public final class ProfileUploader {
   static final String TYPE_PARAM = "type";
   static final String RUNTIME_PARAM = "runtime";
 
-  static final String PROFILE_START_PARAM = "recording-start";
-  static final String PROFILE_END_PARAM = "recording-end";
+  static final String PROFILE_START_PARAM = "start";
+  static final String PROFILE_END_PARAM = "end";
 
-  // TODO: We should rename parameter to just `data`
-  static final String DATA_PARAM = "chunk-data";
+  static final String ATTACHMENT_PARAM = "0.jfr";
 
   static final String TAGS_PARAM = "tags[]";
 
   static final String HEADER_DD_API_KEY = "DD-API-KEY";
   static final String HEADER_DD_CONTAINER_ID = "Datadog-Container-ID";
+  static final String HEADER_DD_PROFILE_ID = "Datadog-Profile-ID";
+  static final String HEADER_DD_EVP_ORIGIN = "DD-EVP-ORIGIN";
+  static final String HEADER_DD_EVP_ORIGIN_VERSION = "DD-EVP-ORIGIN-VERSION";
+  static final String HEADER_DD_EVP_REQUEST_ID = "DD-REQUEST-ID";
 
   static final String JAVA_LANG = "java";
+  static final String JAVA_PROFILING_LIBRARY = "Java profiling library";
   static final String DATADOG_META_LANG = "Datadog-Meta-Lang";
 
   static final int MAX_RUNNING_REQUESTS = 10;
@@ -91,9 +79,17 @@ public final class ProfileUploader {
 
   static final int TERMINATION_TIMEOUT = 5;
 
+  static final String EVENT_PARAM = "event";
+  static final String DATA_PARAM = "0.jfr";
+
+  private static final Headers EVENT_HEADER =
+      Headers.of(
+          "Content-Disposition",
+          "form-data; name=\"" + EVENT_PARAM + "\"; filename=\"event.json\"");
+
   private static final Headers DATA_HEADERS =
       Headers.of(
-          "Content-Disposition", "form-data; name=\"" + DATA_PARAM + "\"; filename=\"profile\"");
+          "Content-Disposition", "form-data; name=\"" + DATA_PARAM + "\"; filename=\"0.jfr\"");
 
   private final ExecutorService okHttpExecutorService;
   private final OkHttpClient client;
@@ -238,13 +234,18 @@ public final class ProfileUploader {
   public void upload(
       final RecordingType type, final RecordingData data, @Nonnull Runnable onCompletion) {
     if (canEnqueueMoreRequests()) {
-      makeUploadRequest(
-          type,
-          data,
-          () -> {
-            data.release();
-            onCompletion.run();
-          });
+      try {
+        makeUploadRequest(
+            type,
+            data,
+            () -> {
+              data.release();
+              onCompletion.run();
+            });
+      } catch (IOException e) {
+        log.warn("Cannot upload profile data", e);
+        data.release();
+      }
       return;
     } else {
       log.warn("Cannot upload profile data: too many enqueued requests!");
@@ -273,29 +274,46 @@ public final class ProfileUploader {
     return client;
   }
 
+  private static String quote(String str) {
+    return "\"" + str + "\"";
+  }
+
+  private byte[] createEvent(@Nonnull final RecordingData data, UUID profileId) throws IOException {
+    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+    OutputStreamWriter os = new OutputStreamWriter(baos);
+    os.append('{');
+    os.append(quote("attachments") + ":[\"0.jfr\"],");
+    os.append(
+        quote("tags_profiler") + ":\"" + tags.stream().collect(Collectors.joining(",")) + "\",");
+    os.append(quote(PROFILE_START_PARAM) + ":\"" + data.getStart() + "\",");
+    os.append(quote(PROFILE_END_PARAM) + ":\"" + data.getEnd() + "\",");
+    os.append(quote("profile-id") + ":\"" + profileId + "\",");
+    os.append(quote("family") + ":\"java\",");
+    os.append(quote("version") + ":\"4\"");
+    os.append("}");
+    os.flush();
+    return baos.toByteArray();
+  }
+
   private void makeUploadRequest(
       @Nonnull final RecordingType type,
       @Nonnull final RecordingData data,
-      @Nonnull Runnable onCompletion) {
+      @Nonnull Runnable onCompletion)
+      throws IOException {
+
+    final MultipartBody.Builder bodyBuilder =
+        new MultipartBody.Builder().setType(MultipartBody.FORM);
+
+    UUID profileId = UUID.randomUUID();
+    byte[] event = createEvent(data, profileId);
+    RequestBody eventBody = RequestBody.create(null, event);
+    bodyBuilder.addPart(EVENT_HEADER, eventBody);
 
     final CompressingRequestBody body =
         new CompressingRequestBody(compressionType, data::getStream);
-
-    final MultipartBody.Builder bodyBuilder =
-        new MultipartBody.Builder()
-            .setType(MultipartBody.FORM)
-            .addFormDataPart(FORMAT_PARAM, PROFILE_FORMAT)
-            .addFormDataPart(TYPE_PARAM, PROFILE_TYPE_PREFIX + type.getName())
-            .addFormDataPart(RUNTIME_PARAM, PROFILE_RUNTIME)
-            // Note that toString is well defined for instants - ISO-8601
-            .addFormDataPart(PROFILE_START_PARAM, data.getStart().toString())
-            .addFormDataPart(PROFILE_END_PARAM, data.getEnd().toString());
-    for (final String tag : tags) {
-      bodyBuilder.addFormDataPart(TAGS_PARAM, tag);
-    }
     bodyBuilder.addPart(DATA_HEADERS, body);
-    final RequestBody requestBody = bodyBuilder.build();
 
+    final RequestBody requestBody = bodyBuilder.build();
     final Request.Builder requestBuilder =
         new Request.Builder()
             .url(url)
@@ -303,6 +321,10 @@ public final class ProfileUploader {
             .addHeader("Transfer-Encoding", "chunked")
             // Note: this header is used to disable tracing of profiling requests
             .addHeader(DATADOG_META_LANG, JAVA_LANG)
+            .addHeader(HEADER_DD_EVP_ORIGIN, JAVA_PROFILING_LIBRARY)
+            .addHeader(HEADER_DD_EVP_ORIGIN_VERSION, VersionInfo.VERSION)
+            .addHeader(HEADER_DD_EVP_REQUEST_ID, profileId.toString())
+            .addHeader(HEADER_DD_PROFILE_ID, profileId.toString())
             .post(requestBody);
     if (agentless && apiKey != null) {
       // we only add the api key header if we know we're doing agentless profiling. No point in

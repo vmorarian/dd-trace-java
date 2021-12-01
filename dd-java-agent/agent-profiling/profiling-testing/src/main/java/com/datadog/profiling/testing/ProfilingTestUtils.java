@@ -20,12 +20,13 @@ public final class ProfilingTestUtils {
         .stream()
         .collect(
             ImmutableMultimap::<String, Object>builder,
-            (builder, value) ->
-                builder.put(
-                    value.getFieldName(),
-                    OCTET_STREAM.toString().equals(value.getContentType())
-                        ? value.get()
-                        : value.getString()),
+            (builder, value) -> {
+              Object file =
+                  OCTET_STREAM.toString().equals(value.getContentType())
+                      ? value.get()
+                      : value.getString();
+              builder.put(value.getFieldName(), file).put(value.getName(), file);
+            },
             (builder1, builder2) -> builder1.putAll(builder2.build()))
         .build();
   }

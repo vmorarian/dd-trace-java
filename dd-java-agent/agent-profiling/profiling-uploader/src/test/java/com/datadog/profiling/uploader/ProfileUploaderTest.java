@@ -15,25 +15,18 @@
  */
 package com.datadog.profiling.uploader;
 
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.spy;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
-import static org.mockito.Mockito.withSettings;
+import static org.mockito.Mockito.*;
 
 import com.datadog.profiling.controller.RecordingData;
 import com.datadog.profiling.controller.RecordingInputStream;
 import com.datadog.profiling.controller.RecordingType;
 import com.datadog.profiling.testing.ProfilingTestUtils;
 import com.datadog.profiling.uploader.util.PidHelper;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
@@ -41,18 +34,11 @@ import com.google.common.collect.Multimap;
 import com.google.common.io.ByteStreams;
 import datadog.trace.api.Config;
 import datadog.trace.api.IOLogger;
-import java.io.BufferedInputStream;
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
+import java.io.*;
 import java.net.ConnectException;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.zip.GZIPInputStream;
@@ -160,8 +146,7 @@ public class ProfileUploaderTest {
   }
 
   @Test
-  void testZippedInput() throws Exception {
-    when(config.getProfilingUploadCompression()).thenReturn("on");
+  public void testEventContent() throws Exception {
     when(config.getProfilingUploadTimeout()).thenReturn(500000);
     uploader = new ProfileUploader(config);
 
@@ -169,41 +154,87 @@ public class ProfileUploaderTest {
 
     uploadAndWait(RECORDING_TYPE, mockRecordingData(true));
 
-    final RecordedRequest recordedRequest = server.takeRequest(5, TimeUnit.SECONDS);
-    assertEquals(url, recordedRequest.getRequestUrl());
-
-    assertNull(recordedRequest.getHeader(ProfileUploader.HEADER_DD_API_KEY));
+    final RecordedRequest request = server.takeRequest(5, TimeUnit.SECONDS);
+    assertEquals(url, request.getRequestUrl());
 
     final Multimap<String, Object> parameters =
-        ProfilingTestUtils.parseProfilingRequestParameters(recordedRequest);
-    assertEquals(
-        ImmutableList.of(ProfileUploader.PROFILE_FORMAT),
-        parameters.get(ProfileUploader.FORMAT_PARAM));
-    assertEquals(
-        ImmutableList.of(ProfileUploader.PROFILE_TYPE_PREFIX + RECORDING_TYPE.getName()),
-        parameters.get(ProfileUploader.TYPE_PARAM));
-    assertEquals(
-        ImmutableList.of(ProfileUploader.PROFILE_RUNTIME),
-        parameters.get(ProfileUploader.RUNTIME_PARAM));
+        ProfilingTestUtils.parseProfilingRequestParameters(request);
 
+    Object rawEvent = parameters.get(ProfileUploader.EVENT_PARAM).stream().findFirst().get();
+    Object rawEvent2 = parameters.get("event.json").stream().findFirst().get();
+    assertEquals(rawEvent2, rawEvent);
+    // TODO: check name of the attachment
+
+    // Event
+    ObjectMapper mapper = new ObjectMapper();
+    JsonNode event = mapper.readTree((String) rawEvent);
+
+    UUID profileId = UUID.fromString(event.get("profile-id").asText());
+    assertEquals("0.jfr", event.get("attachments").get(0).asText());
+    assertEquals("java", event.get("family").asText());
+    assertEquals("4", event.get("version").asText());
+    assertEquals(Instant.ofEpochSecond(PROFILE_START).toString(), event.get("start").asText());
+    assertEquals(Instant.ofEpochSecond(PROFILE_END).toString(), event.get("end").asText());
     assertEquals(
-        ImmutableList.of(Instant.ofEpochSecond(PROFILE_START).toString()),
-        parameters.get(ProfileUploader.PROFILE_START_PARAM));
+        EXPECTED_TAGS,
+        ProfilingTestUtils.parseTags(
+            Arrays.asList(event.get("tags_profiler").asText().split(","))));
+
+    // Headers
     assertEquals(
-        ImmutableList.of(Instant.ofEpochSecond(PROFILE_END).toString()),
-        parameters.get(ProfileUploader.PROFILE_END_PARAM));
-
+        request.getHeader(ProfileUploader.HEADER_DD_EVP_ORIGIN),
+        ProfileUploader.JAVA_PROFILING_LIBRARY);
     assertEquals(
-        EXPECTED_TAGS, ProfilingTestUtils.parseTags(parameters.get(ProfileUploader.TAGS_PARAM)));
-
-    // data which are originally zipped will not be recompressed
-    final byte[] expectedBytes = ByteStreams.toByteArray(recordingStream(true));
-
-    byte[] uploadedBytes =
-        (byte[]) Iterables.getFirst(parameters.get(ProfileUploader.DATA_PARAM), new byte[] {});
-
-    assertArrayEquals(expectedBytes, uploadedBytes);
+        request.getHeader(ProfileUploader.HEADER_DD_EVP_ORIGIN_VERSION), VersionInfo.VERSION);
+    assertEquals(request.getHeader(ProfileUploader.HEADER_DD_EVP_REQUEST_ID), profileId.toString());
   }
+
+  //  @Test
+  //  public void testZippedInput() throws Exception {
+  //    when(config.getProfilingUploadCompression()).thenReturn("on");
+  //    when(config.getProfilingUploadTimeout()).thenReturn(500000);
+  //    uploader = new ProfileUploader(config);
+  //
+  //    server.enqueue(new MockResponse().setResponseCode(200));
+  //
+  //    uploadAndWait(RECORDING_TYPE, mockRecordingData(true));
+  //
+  //    final RecordedRequest recordedRequest = server.takeRequest(5, TimeUnit.SECONDS);
+  //    assertEquals(url, recordedRequest.getRequestUrl());
+  //
+  //    assertNull(recordedRequest.getHeader(ProfileUploader.HEADER_DD_API_KEY));
+  //
+  //    final Multimap<String, Object> parameters =
+  //        ProfilingTestUtils.parseProfilingRequestParameters(recordedRequest);
+  //    assertEquals(
+  //        ImmutableList.of(ProfileUploader.PROFILE_FORMAT),
+  //        parameters.get(ProfileUploader.FORMAT_PARAM));
+  //    assertEquals(
+  //        ImmutableList.of(ProfileUploader.PROFILE_TYPE_PREFIX + RECORDING_TYPE.getName()),
+  //        parameters.get(ProfileUploader.TYPE_PARAM));
+  //    assertEquals(
+  //        ImmutableList.of(ProfileUploader.PROFILE_RUNTIME),
+  //        parameters.get(ProfileUploader.RUNTIME_PARAM));
+  //
+  //    assertEquals(
+  //        ImmutableList.of(Instant.ofEpochSecond(PROFILE_START).toString()),
+  //        parameters.get(ProfileUploader.PROFILE_START_PARAM));
+  //    assertEquals(
+  //        ImmutableList.of(Instant.ofEpochSecond(PROFILE_END).toString()),
+  //        parameters.get(ProfileUploader.PROFILE_END_PARAM));
+  //
+  //    assertEquals(
+  //        EXPECTED_TAGS,
+  // ProfilingTestUtils.parseTags(parameters.get(ProfileUploader.TAGS_PARAM)));
+  //
+  //    // data which are originally zipped will not be recompressed
+  //    final byte[] expectedBytes = ByteStreams.toByteArray(recordingStream(true));
+  //
+  //    byte[] uploadedBytes =
+  //        (byte[]) Iterables.getFirst(parameters.get(ProfileUploader.DATA_PARAM), new byte[]{});
+  //
+  //    assertArrayEquals(expectedBytes, uploadedBytes);
+  //  }
 
   @ParameterizedTest
   @ValueSource(strings = {"on", "lz4", "gzip", "off", "invalid"})
@@ -520,6 +551,15 @@ public class ProfileUploaderTest {
     final RecordedRequest recordedRequest = server.takeRequest(5, TimeUnit.SECONDS);
     assertEquals(
         ProfileUploader.JAVA_LANG, recordedRequest.getHeader(ProfileUploader.DATADOG_META_LANG));
+    //    assertEquals(
+    //        ProfileUploader.JAVA_LANG,
+    // recordedRequest.getHeader(ProfileUploader.HEADER_DD_EVP_ORIGIN));
+    //    assertEquals(
+    //        ProfileUploader.JAVA_LANG,
+    // recordedRequest.getHeader(ProfileUploader.HEADER_DD_EVP_ORIGIN_VERSION));
+    //    assertEquals(
+    //        ProfileUploader.JAVA_LANG,
+    // recordedRequest.getHeader(ProfileUploader.HEADER_DD_EVP_REQUEST_ID));
   }
 
   @Test
