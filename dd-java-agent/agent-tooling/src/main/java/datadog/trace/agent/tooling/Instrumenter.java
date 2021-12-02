@@ -258,9 +258,10 @@ public interface Instrumenter {
           } else {
             if (log.isDebugEnabled()) {
               log.debug(
-                  "Applying instrumentation: {} -- {} on {}",
+                  "Applying instrumentation: {} -- {} applied to {} on {}",
                   instrumentationPrimaryName,
                   Instrumenter.Default.this.getClass().getName(),
+                  classBeingRedefined == null ? "null" : classBeingRedefined.getName(),
                   classLoader);
             }
           }
