@@ -25,6 +25,10 @@ public class CallbackWrapper<T> implements SingleResultCallback<Object> {
     }
   }
 
+  public void cancel() {
+    continuation.cancel();
+  }
+
   public static SingleResultCallback<Object> wrapIfRequired(SingleResultCallback<Object> callback) {
     AgentScope scope = activeScope();
     if (null != scope && scope.isAsyncPropagating()) {
