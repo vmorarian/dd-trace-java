@@ -139,6 +139,7 @@ class PendingTraceBufferTest extends DDSpecification {
     _ * tracer.getPartialFlushMinSpans() >> 10
     _ * tracer.mapServiceName(_)
     _ * tracer.onStart(_)
+    _ * tracer.getTimeWithNanoTicks(_)
     _ * tracer.onFinish(_)
     0 * _
 
@@ -152,6 +153,7 @@ class PendingTraceBufferTest extends DDSpecification {
     _ * tracer.getPartialFlushMinSpans() >> 10
     _ * tracer.mapServiceName(_)
     1 * tracer.onStart(_)
+    1 * tracer.getTimeWithNanoTicks(_)
     1 * tracer.onFinish(_)
     0 * _
   }
@@ -247,6 +249,7 @@ class PendingTraceBufferTest extends DDSpecification {
     }
     _ * tracer.mapServiceName(_)
     1 * tracer.onStart(_)
+    1 * tracer.getTimeWithNanoTicks(_)
     1 * tracer.onFinish(_)
     0 * _
   }
