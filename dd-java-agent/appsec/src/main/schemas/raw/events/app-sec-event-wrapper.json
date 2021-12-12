@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schema/appsec-event-wrapper.json",
+  "title": "AppSec Event Wrapper",
+  "type": "object",
+  "properties": {
+    "triggers": {
+      "$ref": "app-sec-event-1.0.0.json"
+    }
+  }
+}

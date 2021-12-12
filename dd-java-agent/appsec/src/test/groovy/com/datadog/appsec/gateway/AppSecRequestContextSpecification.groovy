@@ -106,18 +106,15 @@ class AppSecRequestContextSpecification extends DDSpecification {
 
   void 'can collect events'() {
     AppSecRequestContext ctx = new AppSecRequestContext()
-    def now = Instant.now()
 
     when:
-    ctx.reportEvents([new AppSecEvent100(detectedAt: now)], null)
     ctx.reportEvents([new AppSecEvent100(), new AppSecEvent100()], null)
     def events = ctx.transferCollectedEvents()
 
     then:
-    events.size() == 3
-    events[0].detectedAt.is(now)
+    events.size() == 2
+    events[0] != null
     events[1] != null
-    events[2] != null
 
     when:
     ctx.reportEvents([new AppSecEvent100()], null)
