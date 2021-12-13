@@ -65,10 +65,7 @@ public class InternalStreamConnectionInstrumentation extends Instrumenter.Tracin
         @Advice.Enter final SingleResultCallback<Object> callback,
         @Advice.Thrown Throwable thrown) {
       if (null != thrown) {
-        if (callback instanceof CallbackWrapper) {
-          CallbackWrapper<Object> wrapped = (CallbackWrapper<Object>) callback;
-          wrapped.cancel();
-        }
+        CallbackWrapper.cancel(callback);
       }
     }
   }
@@ -86,10 +83,7 @@ public class InternalStreamConnectionInstrumentation extends Instrumenter.Tracin
         @Advice.Enter final SingleResultCallback<Object> callback,
         @Advice.Thrown Throwable thrown) {
       if (null != thrown) {
-        if (callback instanceof CallbackWrapper) {
-          CallbackWrapper<Object> wrapped = (CallbackWrapper<Object>) callback;
-          wrapped.cancel();
-        }
+        CallbackWrapper.cancel(callback);
       }
     }
   }
